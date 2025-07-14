@@ -4,47 +4,63 @@
 DOCKER_IMAGE="${DOCKER_REPO:-smtp-relay}"
 DOCKERFILE_PATH="Dockerfile"
 
-set -e
+set -euo pipefail
 
-## ─── Konfiguration (hier Versionen anpassen!) ───────────────────────────────
-# Basis-Alpine-Version
+## ─── Konfiguration ───────────────────────────────────────────────────────────
+# Alpine-Version, kann per ENV überschrieben werden
 ALPINE_VERSION="${ALPINE_VERSION:-3.18}"
+# Architektur
+ARCH="$(uname -m)"
+## ─────────────────────────────────────────────────────────────────────────────
 
-# Postfix-Paketversion (z.B. 3.8.0-r0)
-POSTFIX_VERSION="${POSTFIX_VERSION:-3.8.0-r0}"
+echo "→ Alpine:   ${ALPINE_VERSION}"
+echo "→ Arch:     ${ARCH}"
 
-# Rsyslog-Paketversion (z.B. 8.41.0-r0)
-RSYSLOG_VERSION="${RSYSLOG_VERSION:-8.41.0-r0}"
-## ──────────────────────────────────────────────────────────────────────────
+# Helper: API-Endpoint bauen
+api_url() {
+  local pkg="$1"
+  echo "https://pkgs.alpinelinux.org/api/packages?name=${pkg}&repo=main&arch=${ARCH}&branch=v${ALPINE_VERSION}"
+}
 
-# Architektur ermitteln
-ARCH="$(uname --machine)"
+# 1) Postfix-Version per JSON-API ziehen
+if [[ -z "${POSTFIX_VERSION:-}" ]]; then
+  echo "→ Fetching latest postfix from $(api_url postfix)…"
+  POSTFIX_VERSION="$(curl -s "$(api_url postfix)" \
+    | grep -Po '"version":"\K[0-9A-Za-z.\-]+' \
+    | head -n1)"
+  test -n "$POSTFIX_VERSION"
+fi
+echo "→ Postfix:  ${POSTFIX_VERSION}"
 
-echo "-> Alpine-Version:      ${ALPINE_VERSION}"
-echo "-> Postfix-Version:     ${POSTFIX_VERSION}"
-echo "-> Rsyslog-Version:     ${RSYSLOG_VERSION}"
-echo "-> Ziel-Architektur:    ${ARCH}"
+# 2) Rsyslog-Version per JSON-API ziehen
+if [[ -z "${RSYSLOG_VERSION:-}" ]]; then
+  echo "→ Fetching latest rsyslog from $(api_url rsyslog)…"
+  RSYSLOG_VERSION="$(curl -s "$(api_url rsyslog)" \
+    | grep -Po '"version":"\K[0-9A-Za-z.\-]+' \
+    | head -n1)"
+  test -n "$RSYSLOG_VERSION"
+fi
+echo "→ Rsyslog:  ${RSYSLOG_VERSION}"
 
-# VCS-Reference (Commit-Hash) ermitteln
-if [[ -n "${SOURCE_COMMIT}" ]]; then
+# 3) VCS-Reference (Commit-Hash)
+if [[ -n "${SOURCE_COMMIT:-}" ]]; then
   VCS_REF="${SOURCE_COMMIT}"
-elif [[ -n "${TRAVIS_COMMIT}" ]]; then
+elif [[ -n "${TRAVIS_COMMIT:-}" ]]; then
   VCS_REF="${TRAVIS_COMMIT}"
 else
   VCS_REF="$(git rev-parse --short HEAD)"
 fi
-echo "-> VCS-Reference:       ${VCS_REF}"
+echo "→ VCS-Ref:  ${VCS_REF}"
 
-# Image-Version (statisch in VERSION-Datei)
-IMAGE_VERSION="$(cat VERSION)"
-echo "-> Image-Version:       ${IMAGE_VERSION}"
+# 4) Image-Version aus VERSION-Datei
+IMAGE_VERSION="$(< VERSION)"
+echo "→ Image-Ver:${IMAGE_VERSION}"
 
-# Name während des Builds
-IMAGE_BUILD_NAME="${DOCKER_IMAGE}:building"
-echo "-> Build-Tag:           ${IMAGE_BUILD_NAME}"
+# 5) Build-Tag
+BUILD_TAG="${DOCKER_IMAGE}:building"
+echo "→ Build-Tag:${BUILD_TAG}"
 
-## ─── Build ────────────────────────────────────────────────────────────────
-echo "=> Baue Image ${IMAGE_BUILD_NAME}"
+## ─── Build ───────────────────────────────────────────────────────────────────
 docker build \
   --build-arg "ALPINE_VERSION=${ALPINE_VERSION}" \
   --build-arg "POSTFIX_VERSION=${POSTFIX_VERSION}" \
@@ -60,6 +76,6 @@ docker build \
   --label "org.label-schema.schema-version=1.0" \
   --label "application.postfix.version=${POSTFIX_VERSION}" \
   --label "application.rsyslog.version=${RSYSLOG_VERSION}" \
-  --tag "${IMAGE_BUILD_NAME}" \
+  --tag "${BUILD_TAG}" \
   --file "${DOCKERFILE_PATH}" \
   .
